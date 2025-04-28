@@ -5,6 +5,7 @@ import android.app.Service
 import android.content.res.Configuration
 import android.util.Log
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
@@ -98,7 +99,13 @@ fun ChatScreen(
         ) {
             items(messages.reversed()) { message ->
                 if (message.userId == userStorage.currentId) {
-                    SentMessageBox(message, modifier = Modifier.padding(horizontal = 6.dp))
+                    MessageBox(
+                        message,
+                        "You",
+                        Alignment.End,
+                        elevated = true,
+                        modifier = Modifier.padding(horizontal = 6.dp)
+                    )
                 } else {
                     var username = usernames[message.userId]
                     if (username == null) {
@@ -107,6 +114,7 @@ fun ChatScreen(
                     MessageBox(
                         message,
                         username ?: "Username not found",
+                        Alignment.Start,
                         modifier = Modifier.padding(horizontal = 6.dp)
                     )
                 }
@@ -117,8 +125,14 @@ fun ChatScreen(
 
 @OptIn(ExperimentalTime::class)
 @Composable
-fun MessageBox(message: ChatMessage, name: String, modifier: Modifier = Modifier, nameModifier: Modifier = Modifier) {
-    Column {
+fun MessageBox(
+    message: ChatMessage,
+    name: String,
+    alignment: Alignment.Horizontal,
+    modifier: Modifier = Modifier,
+    elevated: Boolean = false
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             LocalDateTime.ofInstant(
                 message.time.toJavaInstant(),
@@ -126,18 +140,36 @@ fun MessageBox(message: ChatMessage, name: String, modifier: Modifier = Modifier
             ).render(),
             fontSize = LocalTextStyle.current.fontSize.div(1.4),
             color = LocalContentColor.current.copy(alpha = 0.5f),
-            modifier = modifier
+            modifier = modifier.align(alignment)
         )
-        Card(
-            shape = ShapeDefaults.Small,
-            modifier = modifier
-        ) {
+        val content: @Composable ColumnScope.() -> Unit = {
             Text(
                 name,
                 color = LocalContentColor.current.copy(alpha = 0.75f),
-                modifier = nameModifier.padding(horizontal = 6.dp)
+                modifier = Modifier.padding(horizontal = 6.dp).align(alignment),
+                fontSize = LocalTextStyle.current.fontSize.div(1.2)
             )
-            Text(message.message.trim(), modifier = Modifier.padding(start = 6.dp, end = 6.dp, bottom = 6.dp))
+            Text(
+                message.message.trim(),
+                modifier = Modifier
+                    .padding(start = 6.dp, end = 6.dp, bottom = 6.dp)
+                    .align(alignment)
+            )
+        }
+        if (elevated) {
+            OutlinedCard(
+                shape = ShapeDefaults.Small,
+                modifier = modifier.align(Alignment.End)
+            ) {
+                content()
+            }
+        } else {
+            Card(
+                shape = ShapeDefaults.Small,
+                modifier = modifier.align(alignment)
+            ) {
+                content()
+            }
         }
     }
 }
@@ -199,34 +231,6 @@ fun TextInput(onSend: (text: String) -> Unit) {
         }
     }
 }
-@OptIn(ExperimentalTime::class)
-@Composable
-fun SentMessageBox(message: ChatMessage, modifier: Modifier = Modifier) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            LocalDateTime.ofInstant(
-                message.time.toJavaInstant(),
-                ZoneId.systemDefault()
-            ).render(),
-            fontSize = LocalTextStyle.current.fontSize.div(1.4),
-            color = LocalContentColor.current.copy(alpha = 0.5f),
-            modifier = modifier.align(Alignment.End)
-        )
-        OutlinedCard(
-            shape = ShapeDefaults.Small,
-            modifier = modifier.align(Alignment.End)
-        ) {
-            Text(
-                "You",
-                color = LocalContentColor.current.copy(alpha = 0.75f),
-                modifier = Modifier
-                    .padding(horizontal = 6.dp)
-                    .align(Alignment.End)
-            )
-            Text(message.message.trim(), modifier = Modifier.padding(start = 6.dp, end = 6.dp, bottom = 6.dp))
-        }
-    }
-}
 
 @OptIn(ExperimentalTime::class)
 @Preview(uiMode = Configuration.UI_MODE_NIGHT_YES or Configuration.UI_MODE_TYPE_NORMAL,
@@ -261,7 +265,7 @@ fun MessageBoxPreview() {
             ) {
                 items(messages.reversed()) { message ->
                     if (message.userId == currentId) {
-                        SentMessageBox(message, modifier = Modifier.padding(horizontal = 6.dp))
+                        MessageBox(message, "You", Alignment.End, modifier = Modifier.padding(horizontal = 6.dp))
                     } else {
                         var username = usernames[message.userId]
                         if (username == null) {
@@ -270,6 +274,7 @@ fun MessageBoxPreview() {
                         MessageBox(
                             message,
                             username ?: "Username not found",
+                            Alignment.Start,
                             modifier = Modifier.padding(horizontal = 6.dp)
                         )
                     }

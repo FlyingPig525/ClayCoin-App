@@ -9,17 +9,22 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MultiChoiceSegmentedButtonRow
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.currentCompositionLocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +36,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -48,6 +55,7 @@ import io.github.flyingpig525.data.chat.ChatStorage
 import io.github.flyingpig525.ui.chat.cornerSize
 import io.github.flyingpig525.ui.theme.ClayCoinTheme
 import kotlinx.coroutines.runBlocking
+import kotlin.math.sin
 
 @Composable
 fun LoginScreen(
@@ -66,26 +74,35 @@ fun LoginScreen(
         Column(
             modifier = Modifier.onSizeChanged {
                 cardSize = it
-            }.scale(1.1f)
+            }.scale(1.1f),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             var usernameState by remember { mutableStateOf("") }
             var validUsername by remember { mutableStateOf(true) }
             var passwordState by remember { mutableStateOf("") }
             var confirmPasswordState by remember { mutableStateOf("") }
-            var badOptionText by remember { mutableStateOf("") }
+            var badOptionText by remember { mutableStateOf(ErrorText.Empty) }
             OutlinedTextField(
                 value = usernameState,
-                onValueChange = {
+                onValueChange = { it: String ->
                     usernameState = it
                     if (it.length > 25) {
                         validUsername = false
+                        badOptionText = ErrorText.TooLong
+                    } else if (usernameState.any { it.isWhitespace() }) {
+                        validUsername = false
+                        badOptionText = ErrorText.Spaces
                     } else {
                         validUsername = true
+                        if (badOptionText == ErrorText.Spaces || badOptionText == ErrorText.TooLong) {
+                            badOptionText = ErrorText.Empty
+                        }
                     }
                 },
                 label = { Text("Username") },
-                modifier = Modifier.padding(6.dp),
-                isError = !validUsername
+                modifier = Modifier.padding(6.dp).width(TextFieldDefaults.MinWidth),
+                isError = !validUsername,
+                singleLine = true,
             )
             OutlinedTextField(
                 value = passwordState,
@@ -93,8 +110,9 @@ fun LoginScreen(
                     passwordState = it
                 },
                 label = { Text("Password") },
-                modifier = Modifier.padding(6.dp),
-                visualTransformation = PasswordVisualTransformation()
+                modifier = Modifier.padding(6.dp).width(TextFieldDefaults.MinWidth),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
             )
             OutlinedTextField(
                 value = confirmPasswordState,
@@ -102,22 +120,28 @@ fun LoginScreen(
                     confirmPasswordState = it
                 },
                 label = { Text("Confirm Password") },
-                modifier = Modifier.padding(6.dp),
-                visualTransformation = PasswordVisualTransformation()
+                modifier = Modifier.padding(6.dp).width(TextFieldDefaults.MinWidth),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
             )
-            MultiChoiceSegmentedButtonRow {
+            MultiChoiceSegmentedButtonRow(
+                modifier = Modifier
+                    .width(TextFieldDefaults.MinWidth)
+                    .padding(vertical = 6.dp)
+                    .height(TextFieldDefaults.MinHeight)
+            ) {
                 OutlinedButton(
                     onClick = { runBlocking {
+                        if (!validUsername) {
+                            return@runBlocking
+                        }
                         if (passwordState != confirmPasswordState) {
-                            badOptionText = "Passwords do not match"
+                            badOptionText = ErrorText.PasswordsDontMatch
                             return@runBlocking
                         }
                         if (usernameState.any { it == ' ' }) {
-                            badOptionText = "Username cannot have spaces"
+                            badOptionText = ErrorText.Spaces
                             return@runBlocking
-                        }
-                        if (!validUsername) {
-                            badOptionText = "Username cannot be more than 25 characters"
                         }
                         val token = userStorage.getNewToken(usernameState, passwordState)
 
@@ -134,10 +158,10 @@ fun LoginScreen(
                         } else {
                             when (token.exceptionOrNull()) {
                                 is UserDoesNotExistException -> {
-                                    badOptionText = "Account does not exist"
+                                    badOptionText = ErrorText.AccountDoesNotExist
                                 }
                                 is InvalidUsernameOrPasswordException -> {
-                                    badOptionText = "Username or password is invalid"
+                                    badOptionText = ErrorText.Incorrect
                                 }
                             }
                         }
@@ -147,22 +171,23 @@ fun LoginScreen(
                             Modifier.width(cardSize.width.toDp() / 2)
                         }
                     ),
-                    shape = ShapeDefaults.Medium.copy(topEnd = 0.cornerSize, bottomEnd = 0.cornerSize)
+                    shape = ShapeDefaults.ExtraSmall.copy(topEnd = 0.cornerSize, bottomEnd = 0.cornerSize)
                 ) {
                     Text("Login")
                 }
                 OutlinedButton(
                     onClick = { runBlocking {
                         if (passwordState != confirmPasswordState) {
-                            badOptionText = "Passwords do not match"
+                            badOptionText = ErrorText.PasswordsDontMatch
                             return@runBlocking
                         }
                         if (usernameState.any { it == ' ' }) {
-                            badOptionText = "Username cannot have spaces"
+                            badOptionText = ErrorText.Spaces
                             return@runBlocking
                         }
                         if (!validUsername) {
-                            badOptionText = "Username cannot be more than 25 characters"
+                            badOptionText = ErrorText.TooLong
+                            return@runBlocking
                         }
                         val token = userStorage.createNewUser(usernameState, passwordState)
                         if (token.isSuccess) {
@@ -176,7 +201,7 @@ fun LoginScreen(
                                 )
                             }
                         } else {
-                            badOptionText = "Account already exists"
+                            badOptionText = ErrorText.AccountExists
                         }
                     }},
                     modifier = Modifier.then(
@@ -184,14 +209,14 @@ fun LoginScreen(
                             Modifier.width(cardSize.width.toDp() / 2)
                         }
                     ),
-                    shape = ShapeDefaults.Medium.copy(topStart = 0.cornerSize, bottomStart = 0.cornerSize)
+                    shape = ShapeDefaults.ExtraSmall.copy(topStart = 0.cornerSize, bottomStart = 0.cornerSize)
                 ) {
                     Text("Sign Up")
                 }
             }
-            if (badOptionText != "") {
+            if (badOptionText != ErrorText.Empty) {
                 Text(
-                    badOptionText,
+                    badOptionText.txt,
                     color = (
                         if (isSystemInDarkTheme())
                             dynamicDarkColorScheme(LocalContext.current)
@@ -202,6 +227,16 @@ fun LoginScreen(
             }
         }
     }
+}
+
+enum class ErrorText(val txt: String) {
+    AccountExists("Account already exists"),
+    TooLong("Username cannot be longer than 25 characters"),
+    Spaces("Username cannot include whitespace characters"),
+    PasswordsDontMatch("Passwords do not match"),
+    AccountDoesNotExist("Account does not exist"),
+    Incorrect("Username or password is incorrect"),
+    Empty("")
 }
 
 @RequiresApi(Build.VERSION_CODES.S)

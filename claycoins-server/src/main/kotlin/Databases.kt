@@ -3,25 +3,16 @@ package io.github.flyingpig525
 import io.github.flyingpig525.data.auth.AuthModel
 import io.github.flyingpig525.data.auth.Token
 import io.github.flyingpig525.data.auth.exception.InvalidUsernameOrPasswordException
+import io.github.flyingpig525.data.auth.exception.TokenNotFoundException
 import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.MessageContainer
 import io.github.flyingpig525.data.ktor.collect
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
-import io.ktor.websocket.*
-import io.ktor.websocket.serialization.*
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.time.Duration
-import kotlin.time.Duration.Companion.seconds
 import org.jetbrains.exposed.sql.*
 
 lateinit var userService: UserService
@@ -59,7 +50,7 @@ fun Application.configureDatabases() {
 
             patch("/users") {
                 val auth = call.collect<AuthModel>()
-                val newToken = userService.getToken(auth)
+                val newToken = userService.getTokenWithAuth(auth)
                 if (newToken.isFailure) {
                     when (newToken.exceptionOrNull()) {
                         is UserDoesNotExistException -> {
@@ -86,13 +77,22 @@ fun Application.configureDatabases() {
                     return@get
                 }
                 val token = Token(tokenStr)
-                val id = userService.getTokenContent(token)?.userId
-                if (id != null) {
-                    log.info("id for token $tokenStr is $id")
-                    call.respondText(status = HttpStatusCode.OK) { id.toString() }
-                } else {
-                    call.respondText(status = HttpStatusCode.NotFound) { "Token not found" }
-                }
+                val id = userService.getTokenContent(token).apply {
+                    if (isFailure) {
+                        when (exceptionOrNull()) {
+                            is UserDoesNotExistException -> {
+                                call.respond(HttpStatusCode.NotFound) { "User does not exist" }
+                            }
+
+                            is TokenNotFoundException -> {
+                                call.respond(HttpStatusCode.NotFound) { "Token not found" }
+                            }
+                        }
+                        return@get
+                    }
+                }.getOrThrow().userId
+                log.info("id for token $tokenStr is $id")
+                call.respondText(status = HttpStatusCode.OK) { id.toString() }
             }
             post("/chat") {
                 val (user, message) = call.collect<MessageContainer>()

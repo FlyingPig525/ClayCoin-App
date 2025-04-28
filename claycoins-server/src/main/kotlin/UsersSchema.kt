@@ -1,31 +1,26 @@
 package io.github.flyingpig525
 
-import io.github.flyingpig525.UserService.Users
 import io.github.flyingpig525.data.UserDataContainer
 import io.github.flyingpig525.data.auth.AuthModel
 import io.github.flyingpig525.data.auth.Token
 import io.github.flyingpig525.data.auth.TokenContent
 import io.github.flyingpig525.data.auth.exception.InvalidUsernameOrPasswordException
+import io.github.flyingpig525.data.auth.exception.TokenNotFoundException
 import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatMessage
-import io.ktor.util.Hash
-import io.ktor.websocket.WebSocketSession
 import kotlinx.coroutines.Dispatchers
-import kotlinx.serialization.Serializable
 import org.h2.engine.User
 import org.h2.security.SHA256
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.nio.ByteBuffer
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 class UserService(database: Database) {
-    val tokens = mutableMapOf<Token, TokenContent>()
     object Users : Table() {
         val id = integer("id").autoIncrement()
         val username = varchar("username", length = 50)
@@ -36,9 +31,21 @@ class UserService(database: Database) {
         override val primaryKey = PrimaryKey(id)
     }
 
+    object Tokens : Table() {
+        val token = varchar("token", 64)
+        val userId = integer("userId")
+    }
+
     init {
         transaction(database) {
-            SchemaUtils.create(Users)
+            SchemaUtils.create(Users, Tokens)
+        }
+    }
+
+    suspend fun addToken(t: Token, user: Int): Unit = dbQuery {
+        Tokens.insert {
+            it[token] = t.hashedToken
+            it[userId] = user
         }
     }
 
@@ -57,19 +64,8 @@ class UserService(database: Database) {
             it[admin] = false
         }[Users.id]
         val token = token(user.username, id)
-        tokens[token] = TokenContent(user.username, id, hashedPass)
+        addToken(token, id)
         Result.success(token)
-    }
-
-    suspend fun read(token: Token): AuthModel? {
-        val content = tokens[token]
-        if (content == null) return null
-        return dbQuery {
-            Users.selectAll()
-                .where { Users.id eq content.userId }
-                .map { AuthModel(it[Users.username], it[Users.hashedPassword]) }
-                .singleOrNull()
-        }
     }
 
 //    /**
@@ -95,16 +91,52 @@ class UserService(database: Database) {
      * @throws UserDoesNotExistException
      * @throws InvalidUsernameOrPasswordException
      */
-    suspend fun getToken(user: AuthModel): Result<Token> = dbQuery {
+    suspend fun getTokenWithAuth(user: AuthModel): Result<Token> = dbQuery {
         if (!exists(user)) return@dbQuery Result.failure(UserDoesNotExistException())
         val res = Users.selectAll().where { Users.username eq user.username }.singleOrNull()!!
         val salt = res[Users.salt]
         val hash = getHash(user.password, salt)
         if (res[Users.hashedPassword] == hash) {
-            val token = tokens.filterValues { it.username == user.username }.keys.toList()[0]
-            return@dbQuery Result.success(token)
+            val token = getToken(res[Users.id])
+            if (token.isFailure) {
+                return@dbQuery Result.failure(token.exceptionOrNull()!!)
+            }
+            return@dbQuery Result.success(token.getOrThrow())
         }
         Result.failure(InvalidUsernameOrPasswordException())
+    }
+
+    /**
+     * @throws TokenNotFoundException
+     */
+    private suspend fun getToken(user: Int): Result<Token> = dbQuery {
+        val res = Tokens.selectAll().where { Tokens.userId eq user }.singleOrNull()
+        if (res == null) {
+            return@dbQuery Result.failure(TokenNotFoundException())
+        }
+        return@dbQuery Result.success(Token(res[Tokens.token]))
+    }
+
+    /**
+     * @throws TokenNotFoundException
+     * @throws UserDoesNotExistException
+     */
+    suspend fun getTokenContent(t: Token): Result<TokenContent> = dbQuery {
+        val res = Tokens.selectAll().where { Tokens.token eq t.hashedToken }.singleOrNull()
+        if (res == null) {
+            return@dbQuery Result.failure(TokenNotFoundException())
+        }
+        val user = Users.selectAll().where { Users.id eq res[Tokens.userId] }.singleOrNull()
+        if (user == null) {
+            return@dbQuery Result.failure(UserDoesNotExistException())
+        }
+        return@dbQuery Result.success(TokenContent(
+            user[Users.username],
+            user[Users.id],
+            user[Users.hashedPassword],
+            user[Users.admin]
+        ))
+
     }
 
     suspend fun delete(id: Int) {
@@ -114,16 +146,21 @@ class UserService(database: Database) {
     }
 
     suspend fun isAdmin(token: Token): Boolean = dbQuery {
-        val content = tokens[token]
-        if (content == null) return@dbQuery false
+        val content = getTokenContent(token).apply {
+            if (isFailure) {
+                exceptionOrNull()?.printStackTrace()
+                return@dbQuery false
+            }
+        }.getOrThrow()
         Users.selectAll().where { Users.id eq content.userId }.map {
             it[Users.admin]
         }.singleOrNull() == true
     }
 
     suspend fun authenticateUser(token: Token): Boolean {
-        val content = tokens[token]
-        if (content == null) return false
+        val content = getTokenContent(token).apply {
+            if (isFailure) return false
+        }.getOrThrow()
         return dbQuery {
             Users.selectAll().where { Users.id eq content.userId }.map {
                 it[Users.hashedPassword]
@@ -151,8 +188,6 @@ class UserService(database: Database) {
     suspend fun exists(username: String): Boolean = dbQuery {
         Users.selectAll().where { Users.username eq username }.singleOrNull() != null
     }
-
-    fun getTokenContent(token: Token): TokenContent? = tokens[token]
 
     @OptIn(ExperimentalStdlibApi::class)
     private fun getHash(password: String, salt: Byte) =
@@ -188,11 +223,13 @@ class ChatService(database: Database) {
 
     @OptIn(ExperimentalTime::class)
     suspend fun addMessage(message: String, token: Token): ChatMessage? {
-        val user = userService.getTokenContent(token)
-        if (user == null) {
-            exposedLogger.error("user with token $token does not exist")
-            return null
-        }
+        val user = userService.getTokenContent(token).apply {
+            if (isFailure) {
+                exposedLogger.error("an error occurred when adding token: $token's message")
+                exceptionOrNull()?.printStackTrace()
+                return null
+            }
+        }.getOrThrow()
         val message = dbQuery {
             Messages.insert {
                 it[userId] = user.userId

@@ -12,18 +12,20 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import org.jetbrains.exposed.sql.*
 
-val messagesToSend = MutableSharedFlow<ChatMessage>()
+val messagesToSend = MutableSharedFlow<ChatMessage>(replay = 50)
 private val sharedFlow = messagesToSend.asSharedFlow()
 
 fun Application.configureSockets() {
@@ -37,11 +39,15 @@ fun Application.configureSockets() {
     routing {
         webSocket {
             var job: Job? = null
+            var cancel = false
             try {
                 job = launch {
                     sharedFlow.collect {
-                        println("broadcasting message $it")
+                        log.info("broadcasting message $it")
                         send(Json.encodeToString(it))
+                        if (cancel) {
+                            cancel()
+                        }
                     }
                 }
                 runCatching {
@@ -58,6 +64,8 @@ fun Application.configureSockets() {
                 log.error("An exception occurred in the websocket", e)
             } finally {
                 job?.cancel("Socket connection ended")
+                cancel = true
+                log.info("Connection to ${call.request.local.remoteAddress}:${call.request.local.remotePort} closed")
             }
         }
     }

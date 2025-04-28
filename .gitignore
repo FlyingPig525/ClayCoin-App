@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+**/**/h2-database.mv.db
