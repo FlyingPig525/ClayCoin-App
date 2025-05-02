@@ -7,8 +7,11 @@ import io.github.flyingpig525.data.auth.Token
 import io.github.flyingpig525.data.auth.exception.InvalidUsernameOrPasswordException
 import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
+import io.github.flyingpig525.data.chat.ChatStorage
+import io.github.flyingpig525.data.exception.NoIdException
 import io.github.flyingpig525.data.ktor.body
 import io.github.flyingpig525.data.ktor.json
+import io.github.flyingpig525.data.user.UserData
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
@@ -18,6 +21,7 @@ import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -29,27 +33,42 @@ class UserStorage {
             field = value
             if (value != null) {
                 runBlocking {
-                    setId()
+                    setMeta()
                 }
             } else {
                 currentId = null
+                data = null
             }
         }
     var currentId: Int? = null
         private set
+    var data: UserData? = null
+        private set
 
-    private suspend fun setId() {
+    private suspend fun setMeta() {
         // should never happen
         if (currentToken == null) return
         val req = httpClient.get("$HTTP_SERVER_IP/users/id") {
             parameter("token", currentToken!!.hashedToken)
         }
-        if (req.status != HttpStatusCode.NotFound) {
-            currentId = req.body<Int>()
-        } else {
+        if (req.status == HttpStatusCode.NotFound) {
             Log.e("io.github.flyingpig525", "Id request status = NotFound")
+            return
         }
+        currentId = req.body<Int>()
+        val userData = getUserData(currentId!!)
+        if (userData.isFailure) return
+        data = userData.getOrThrow()
     }
+
+    suspend fun updateData(): Result<UserData> {
+        if (currentId == null) return Result.failure(NoIdException())
+        val userData = getUserData(currentId!!)
+        if (userData.isFailure) return userData
+        data = userData.getOrThrow()
+        return Result.success(data!!)
+    }
+
     suspend fun createNewUser(username: String, password: String): Result<Token> {
         val exists = usernameExists(username)
         if (exists) return Result.failure(UserAlreadyExistsException())
@@ -76,19 +95,16 @@ class UserStorage {
         val tokenReq = httpClient.patch("$HTTP_SERVER_IP/users") {
             body(auth)
         }
-        when (tokenReq.status) {
-            HttpStatusCode.NotFound -> return Result.failure(UserDoesNotExistException())
-            HttpStatusCode.Unauthorized -> return Result.failure(InvalidUsernameOrPasswordException())
-            HttpStatusCode.OK -> return Result.success(tokenReq.json<Token>())
+        return when (tokenReq.status) {
+            HttpStatusCode.NotFound -> Result.failure(UserDoesNotExistException())
+            HttpStatusCode.Unauthorized -> Result.failure(InvalidUsernameOrPasswordException())
+            HttpStatusCode.OK -> Result.success(tokenReq.json<Token>())
             else -> throw UnknownError("Unknown request status ${tokenReq.status}")
         }
     }
 
-    suspend fun usernameExists(username: String): Boolean {
-        return httpClient.get("$HTTP_SERVER_IP/users/$username/exists") {
-            contentType(ContentType.Text.Plain)
-            setBody(username)
-        }.status == HttpStatusCode.Conflict
+    fun logOut() {
+        currentToken = null
     }
 
     companion object {
@@ -97,6 +113,22 @@ class UserStorage {
             engine {
                 webSocketFactory
             }
+        }
+
+        suspend fun usernameExists(username: String): Boolean {
+            return httpClient.get("$HTTP_SERVER_IP/users/$username/exists")
+                .status == HttpStatusCode.Conflict
+        }
+
+        suspend fun getUserData(userId: Int): Result<UserData> {
+            val req = httpClient.get("$HTTP_SERVER_IP/users/$userId")
+            println(req)
+            println(req.bodyAsText())
+            if (req.status == HttpStatusCode.NotFound) {
+                return Result.failure(UserDoesNotExistException())
+            }
+            val data = req.json<UserData>()
+            return Result.success(data)
         }
     }
 }

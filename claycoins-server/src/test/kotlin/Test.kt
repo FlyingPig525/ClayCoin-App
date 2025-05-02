@@ -76,10 +76,8 @@ class ServerTest {
     }
 
     @Test
-    fun testWebsocketClosing() = test { client ->
-        val token = client.post("/users") {
-            body(AuthModel("hello", "pass"))
-        }.json<Token>()
+    fun testWebsocketClosing() = MassUserContext.test { client, ctx ->
+        val token = ctx.randomUser().token
 
         val sessions = MutableList(20) {
             client.webSocketSession { }
@@ -89,6 +87,19 @@ class ServerTest {
             session.close()
             delay(100)
         }
+    }
+
+    @Test
+    fun testUserData() = MassUserContext.test(userCount = 1) { client, ctx ->
+        delay(10000)
+        val user = ctx.randomUser()
+        val req = client.get("/users/id") {
+            parameter("token", user.token.hashedToken)
+        }.body<Int>()
+        println(req)
+        val data = client.get("/users/$req")
+        println(data)
+        println(data.bodyAsText())
     }
 
     fun test(lambda: suspend ApplicationTestBuilder.(client: HttpClient) -> Unit) = testApplication {
@@ -109,3 +120,88 @@ class ServerTest {
         lambda(client)
     }
 }
+
+class MassUserContext(private val client: HttpClient) {
+    private val _users: MutableList<User> = mutableListOf()
+    val users: List<User> get() = _users.toList()
+
+    fun randomUser(): User = _users.random()
+
+    private suspend fun populate(userCount: Int) {
+        for (i in 0 until userCount) {
+            val pass = pass()
+            val name = name()
+            val token = client.post("/users") {
+                body(AuthModel(name, pass))
+            }.json<Token>()
+            _users += User(token, name, pass)
+        }
+    }
+
+    data class User(val token: Token, val username: String, val pass: String)
+
+    companion object {
+        fun test(
+            userCount: Int = 20,
+            lambda: suspend ApplicationTestBuilder.(HttpClient, ctx: MassUserContext) -> Unit
+        ) = testApplication {
+            File("./h2-database.mv.db").apply {
+                if (exists()) {
+                    delete()
+                }
+            }
+            application {
+                module()
+            }
+            install(ContentNegotiation) {
+                json()
+            }
+            val client = createClient {
+                install(io.ktor.client.plugins.websocket.WebSockets)
+            }
+            val ctx = MassUserContext(client)
+            ctx.populate(userCount)
+            lambda(client, ctx)
+        }
+    }
+}
+
+val passwordSections = listOf("123", "password", "this", "is", "a", "pass", "secret", "dont", "look")
+
+fun pass(): String {
+    var p = ""
+    for (i in 0..4) {
+        p += "${passwordSections.random()}_"
+    }
+    return p.dropLast(1)
+}
+
+fun name(): String = "${firstNames.random()} ${ALPHABET.random()}. ${lastNames.random()}"
+
+const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXWZ"
+
+val firstNames = listOf(
+    "Jake",
+    "John",
+    "Adam",
+    "Alex",
+    "Patrick",
+    "Pat",
+    "Jack",
+    "Alexander",
+    "Parker",
+    "Ronald",
+    "Trevor",
+    "Dennis",
+    "Dean"
+)
+
+// i know absolutely no last names
+val lastNames = listOf(
+    "Moore",
+    "Morrison",
+    "Washington",
+    "Hamilton",
+    "Jackson",
+    "McDonald"
+)

@@ -36,3 +36,7 @@ suspend inline fun <reified T> ApplicationCall.collect(): T {
         throw e
     }
 }
+
+suspend inline fun <reified T> ApplicationCall.json(value: T, status: HttpStatusCode) {
+    respondText(Json.encodeToString(value), status = status)
+}

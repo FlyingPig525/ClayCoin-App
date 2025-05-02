@@ -15,3 +15,4 @@
 local.properties
 
 **/**/h2-database.mv.db
+h2-database.mv.db

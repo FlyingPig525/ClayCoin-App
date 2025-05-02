@@ -8,11 +8,15 @@ import androidx.annotation.RequiresApi
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidthIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MultiChoiceSegmentedButtonRow
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,29 +47,39 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.getSystemService
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import io.github.flyingpig525.Application
 import io.github.flyingpig525.MainActivity
+import io.github.flyingpig525.Page
 import io.github.flyingpig525.data.UserStorage
 import io.github.flyingpig525.data.auth.exception.InvalidUsernameOrPasswordException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatStorage
+import io.github.flyingpig525.getColorScheme
 import io.github.flyingpig525.ui.chat.cornerSize
 import io.github.flyingpig525.ui.theme.ClayCoinTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.math.sin
 
+// this composable is a cluster fuck
 @Composable
 fun LoginScreen(
-    windowBounds: Rect,
     modifier: Modifier = Modifier,
     userStorage: UserStorage = UserStorage(),
-    chatStorage: ChatStorage = ChatStorage(),
     navController: NavHostController
 ) {
+    var loading by remember { mutableStateOf(false) }
+    if (loading) {
+        Dialog(onDismissRequest = {}) {
+            CircularProgressIndicator()
+        }
+    }
     Column(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
@@ -82,6 +97,7 @@ fun LoginScreen(
             var passwordState by remember { mutableStateOf("") }
             var confirmPasswordState by remember { mutableStateOf("") }
             var badOptionText by remember { mutableStateOf(ErrorText.Empty) }
+            val cScope = rememberCoroutineScope()
             OutlinedTextField(
                 value = usernameState,
                 onValueChange = { it: String ->
@@ -131,84 +147,81 @@ fun LoginScreen(
                     .height(TextFieldDefaults.MinHeight)
             ) {
                 OutlinedButton(
-                    onClick = { runBlocking {
-                        if (!validUsername) {
-                            return@runBlocking
-                        }
-                        if (passwordState != confirmPasswordState) {
-                            badOptionText = ErrorText.PasswordsDontMatch
-                            return@runBlocking
-                        }
-                        if (usernameState.any { it == ' ' }) {
-                            badOptionText = ErrorText.Spaces
-                            return@runBlocking
-                        }
-                        val token = userStorage.getNewToken(usernameState, passwordState)
+                    onClick = {
+                        loading = true
+                        cScope.launch {
+                            if (!validUsername) {
+                                return@launch
+                            }
+                            if (passwordState != confirmPasswordState) {
+                                badOptionText = ErrorText.PasswordsDontMatch
+                                return@launch
+                            }
+                            if (usernameState.any { it == ' ' }) {
+                                badOptionText = ErrorText.Spaces
+                                return@launch
+                            }
+                            val token = userStorage.getNewToken(usernameState, passwordState)
 
-                        if (token.isSuccess) {
-                            userStorage.currentToken = token.getOrThrow()
-                            MainActivity.instance.setContent {
-                                navController.clearBackStack<String>()
-                                Application(
-                                    windowBounds,
-                                    userStorage,
-                                    chatStorage
-                                )
-                            }
-                        } else {
-                            when (token.exceptionOrNull()) {
-                                is UserDoesNotExistException -> {
-                                    badOptionText = ErrorText.AccountDoesNotExist
-                                }
-                                is InvalidUsernameOrPasswordException -> {
-                                    badOptionText = ErrorText.Incorrect
+                            if (token.isSuccess) {
+                                userStorage.currentToken = token.getOrThrow()
+                                navController.navigate(Page.dashboard)
+                            } else {
+                                when (token.exceptionOrNull()) {
+                                    is UserDoesNotExistException -> {
+                                        badOptionText = ErrorText.AccountDoesNotExist
+                                    }
+
+                                    is InvalidUsernameOrPasswordException -> {
+                                        badOptionText = ErrorText.Incorrect
+                                    }
                                 }
                             }
+                        }.invokeOnCompletion {
+                            loading = false
                         }
-                    }},
+                    },
                     modifier = Modifier.then(
                         with(LocalDensity.current) {
                             Modifier.width(cardSize.width.toDp() / 2)
                         }
-                    ),
+                    ).fillMaxHeight(),
                     shape = ShapeDefaults.ExtraSmall.copy(topEnd = 0.cornerSize, bottomEnd = 0.cornerSize)
                 ) {
                     Text("Login")
                 }
                 OutlinedButton(
-                    onClick = { runBlocking {
-                        if (passwordState != confirmPasswordState) {
-                            badOptionText = ErrorText.PasswordsDontMatch
-                            return@runBlocking
-                        }
-                        if (usernameState.any { it == ' ' }) {
-                            badOptionText = ErrorText.Spaces
-                            return@runBlocking
-                        }
-                        if (!validUsername) {
-                            badOptionText = ErrorText.TooLong
-                            return@runBlocking
-                        }
-                        val token = userStorage.createNewUser(usernameState, passwordState)
-                        if (token.isSuccess) {
-                            userStorage.currentToken = token.getOrThrow()
-                            MainActivity.instance.setContent {
-                                navController.clearBackStack<String>()
-                                Application(
-                                    windowBounds,
-                                    userStorage,
-                                    chatStorage
-                                )
+                    onClick = {
+                        loading = true
+                        cScope.launch {
+                            if (passwordState != confirmPasswordState) {
+                                badOptionText = ErrorText.PasswordsDontMatch
+                                return@launch
                             }
-                        } else {
-                            badOptionText = ErrorText.AccountExists
+                            if (usernameState.any { it == ' ' }) {
+                                badOptionText = ErrorText.Spaces
+                                return@launch
+                            }
+                            if (!validUsername) {
+                                badOptionText = ErrorText.TooLong
+                                return@launch
+                            }
+                            val token = userStorage.createNewUser(usernameState, passwordState)
+                            if (token.isSuccess) {
+                                userStorage.currentToken = token.getOrThrow()
+                                navController.navigate(Page.dashboard)
+                            } else {
+                                badOptionText = ErrorText.AccountExists
+                            }
+                        }.invokeOnCompletion {
+                            loading = false
                         }
-                    }},
+                    },
                     modifier = Modifier.then(
                         with(LocalDensity.current) {
                             Modifier.width(cardSize.width.toDp() / 2)
                         }
-                    ),
+                    ).fillMaxHeight(),
                     shape = ShapeDefaults.ExtraSmall.copy(topStart = 0.cornerSize, bottomStart = 0.cornerSize)
                 ) {
                     Text("Sign Up")
@@ -217,12 +230,7 @@ fun LoginScreen(
             if (badOptionText != ErrorText.Empty) {
                 Text(
                     badOptionText.txt,
-                    color = (
-                        if (isSystemInDarkTheme())
-                            dynamicDarkColorScheme(LocalContext.current)
-                        else
-                            dynamicLightColorScheme(LocalContext.current)
-                    ).error
+                    color = getColorScheme().error
                 )
             }
         }
@@ -252,8 +260,6 @@ fun LoginScreenPreview() {
         Scaffold { innerPadding ->
             val navController = rememberNavController()
             LoginScreen(
-                windowBounds =
-                    LocalContext.current.getSystemService<WindowManager>()!!.currentWindowMetrics.bounds,
                 modifier = Modifier.padding(innerPadding),
                 navController = navController
             )

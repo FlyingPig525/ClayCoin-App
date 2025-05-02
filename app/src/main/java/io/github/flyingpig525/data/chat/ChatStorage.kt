@@ -113,17 +113,19 @@ class ChatStorage {
         }
     }
 
-    private suspend fun getIdUsername(id: Int): String? {
-        Log.d("ChatStorage", "Requesting username for id $id")
-        val username = UserStorage.httpClient.get(
-            "$HTTP_SERVER_IP/users/$id/username"
-        ).bodyAsText()
-        if (username.isBlank()) {
-            Log.e("ChatStorage", "Received username is blank")
-            return null
+    companion object {
+        suspend fun getIdUsername(id: Int): String? {
+            Log.d("ChatStorage", "Requesting username for id $id")
+            val username = UserStorage.httpClient.get(
+                "$HTTP_SERVER_IP/users/$id/username"
+            ).bodyAsText()
+            if (username.isBlank()) {
+                Log.e("ChatStorage", "Received username is blank")
+                return null
+            }
+            Log.d("ChatStorage", "Username for id $id is $username")
+            return username
         }
-        Log.d("ChatStorage", "Username for id $id is $username")
-        return username
     }
 
     suspend fun closeWs() {

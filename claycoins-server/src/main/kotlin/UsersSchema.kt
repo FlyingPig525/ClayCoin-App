@@ -9,8 +9,12 @@ import io.github.flyingpig525.data.auth.exception.TokenNotFoundException
 import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatMessage
+import io.github.flyingpig525.data.ktor.CallResult
+import io.github.flyingpig525.data.user.CLAYCOIN_INCREMENT_MS
+import io.github.flyingpig525.data.user.CLAYCOIN_INCREMENT_S
+import io.github.flyingpig525.data.user.UserCurrencies
 import kotlinx.coroutines.Dispatchers
-import org.h2.engine.User
+import kotlinx.coroutines.delay
 import org.h2.security.SHA256
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -20,6 +24,7 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
+@OptIn(ExperimentalTime::class)
 class UserService(database: Database) {
     object Users : Table() {
         val id = integer("id").autoIncrement()
@@ -34,11 +39,24 @@ class UserService(database: Database) {
     object Tokens : Table() {
         val token = varchar("token", 64)
         val userId = integer("userId")
+
+        override val primaryKey = PrimaryKey(token)
+    }
+
+    object Currencies : Table() {
+        val userId = integer("userId")
+        val coins = long("coins").default(0)
+        val shiners = double("shiners").default(0.0)
+        val lastCoinAddTime = long("lastCoinAddTime").clientDefault {
+            Clock.System.now().toEpochMilliseconds()
+        }
+
+        override val primaryKey = PrimaryKey(userId)
     }
 
     init {
         transaction(database) {
-            SchemaUtils.create(Users, Tokens)
+            SchemaUtils.create(Users, Tokens, Currencies)
         }
     }
 
@@ -53,19 +71,25 @@ class UserService(database: Database) {
      * @throws UserAlreadyExistsException
      */
     @OptIn(ExperimentalStdlibApi::class)
-    suspend fun create(user: AuthModel): Result<Token> = dbQuery {
-        if (exists(user)) return@dbQuery Result.failure(UserAlreadyExistsException())
+    suspend fun create(user: AuthModel): CallResult<Token> = dbQuery {
+        if (exists(user)) return@dbQuery CallResult.userAlreadyExists()
         val salt = (Byte.MIN_VALUE..Byte.MAX_VALUE).random().toByte()
         val hashedPass = getHash(user.password, salt)
-        val id = Users.insert {
+        val insert = Users.insert {
             it[username] = user.username
             it[hashedPassword] = hashedPass
             it[this.salt] = salt
             it[admin] = false
-        }[Users.id]
+        }
+        val id = insert[Users.id]
+
+        // Everything else in Currencies has a default value
+        Currencies.insert {
+            it[userId] = id
+        }
         val token = token(user.username, id)
         addToken(token, id)
-        Result.success(token)
+        CallResult.success(token)
     }
 
 //    /**
@@ -91,46 +115,46 @@ class UserService(database: Database) {
      * @throws UserDoesNotExistException
      * @throws InvalidUsernameOrPasswordException
      */
-    suspend fun getTokenWithAuth(user: AuthModel): Result<Token> = dbQuery {
-        if (!exists(user)) return@dbQuery Result.failure(UserDoesNotExistException())
+    suspend fun getTokenWithAuth(user: AuthModel): CallResult<Token> = dbQuery {
+        if (!exists(user)) return@dbQuery CallResult.userDoesNotExist()
         val res = Users.selectAll().where { Users.username eq user.username }.singleOrNull()!!
         val salt = res[Users.salt]
         val hash = getHash(user.password, salt)
         if (res[Users.hashedPassword] == hash) {
             val token = getToken(res[Users.id])
             if (token.isFailure) {
-                return@dbQuery Result.failure(token.exceptionOrNull()!!)
+                return@dbQuery token
             }
-            return@dbQuery Result.success(token.getOrThrow())
+            return@dbQuery CallResult.success(token.getOrThrow())
         }
-        Result.failure(InvalidUsernameOrPasswordException())
+        CallResult.invalidUsernameOrPassword()
     }
 
     /**
      * @throws TokenNotFoundException
      */
-    private suspend fun getToken(user: Int): Result<Token> = dbQuery {
+    private suspend fun getToken(user: Int): CallResult<Token> = dbQuery {
         val res = Tokens.selectAll().where { Tokens.userId eq user }.singleOrNull()
         if (res == null) {
-            return@dbQuery Result.failure(TokenNotFoundException())
+            return@dbQuery CallResult.tokenNotFound()
         }
-        return@dbQuery Result.success(Token(res[Tokens.token]))
+        return@dbQuery CallResult.success(Token(res[Tokens.token]))
     }
 
     /**
      * @throws TokenNotFoundException
      * @throws UserDoesNotExistException
      */
-    suspend fun getTokenContent(t: Token): Result<TokenContent> = dbQuery {
+    suspend fun getTokenContent(t: Token): CallResult<TokenContent> = dbQuery {
         val res = Tokens.selectAll().where { Tokens.token eq t.hashedToken }.singleOrNull()
         if (res == null) {
-            return@dbQuery Result.failure(TokenNotFoundException())
+            return@dbQuery CallResult.tokenNotFound()
         }
         val user = Users.selectAll().where { Users.id eq res[Tokens.userId] }.singleOrNull()
         if (user == null) {
-            return@dbQuery Result.failure(UserDoesNotExistException())
+            return@dbQuery CallResult.userDoesNotExist()
         }
-        return@dbQuery Result.success(TokenContent(
+        return@dbQuery CallResult.success(TokenContent(
             user[Users.username],
             user[Users.id],
             user[Users.hashedPassword],
@@ -168,7 +192,10 @@ class UserService(database: Database) {
         }
     }
 
-    suspend fun getById(id: Int): Result<UserDataContainer> = dbQuery {
+    /**
+     * @throws UserDoesNotExistException
+     */
+    suspend fun getById(id: Int): CallResult<UserDataContainer> = dbQuery {
         val user = Users.selectAll()
             .where { Users.id eq id }
             .map {
@@ -179,14 +206,84 @@ class UserService(database: Database) {
                 )
             }.singleOrNull()
         if (user == null)
-            return@dbQuery Result.failure(UserDoesNotExistException())
-        return@dbQuery Result.success(user)
+            return@dbQuery CallResult.userDoesNotExist()
+        return@dbQuery CallResult.success(user)
     }
 
     suspend fun exists(user: AuthModel): Boolean = exists(user.username)
 
     suspend fun exists(username: String): Boolean = dbQuery {
         Users.selectAll().where { Users.username eq username }.singleOrNull() != null
+    }
+
+    /**
+     * @throws UserDoesNotExistException
+     */
+    suspend fun getCurrencies(userId: Int): CallResult<UserCurrencies> = dbQuery {
+        val currencies = Currencies
+            .selectAll()
+            .where { Currencies.userId eq userId }
+            .map {
+                UserCurrencies(
+                    it[Currencies.coins],
+                    it[Currencies.shiners],
+                    it[Currencies.lastCoinAddTime]
+                )
+            }.singleOrNull()
+        if (currencies == null) return@dbQuery CallResult.userDoesNotExist()
+        CallResult.success(currencies)
+    }
+
+    /**
+     * @return The value of this result should not ever be used
+     *
+     * @throws UserDoesNotExistException
+     */
+    suspend fun updateCoins(userId: Int): CallResult<UserCurrencies> = dbQuery {
+        val currenciesRes = getCurrencies(userId)
+        if (currenciesRes.isFailure) {
+            return@dbQuery currenciesRes
+        }
+        val currencies = currenciesRes.getOrThrow()
+        val epoch = Clock.System.now().toEpochMilliseconds()
+        val over = ((epoch - currencies.coinUpdateTimeMs) / CLAYCOIN_INCREMENT_MS).toInt()
+        exposedLogger.info("over $over updateTime ${currencies.coinUpdateTimeMs} now $epoch")
+        if (over == 0) {
+            return@dbQuery currenciesRes
+        }
+        setCoins(userId, currencies.coins + over)
+    }
+
+    /**
+     * i don't think i finished writing this???????
+     *
+     * @throws UserDoesNotExistException
+     */
+    suspend fun getCoinProgress(userId: Int): CallResult<Long> = dbQuery {
+        val currenciesRes = getCurrencies(userId)
+        if (currenciesRes.isFailure) return@dbQuery currenciesRes.to<Long>()
+        CallResult.success(currenciesRes.getOrThrow().coinUpdateTimeMs % CLAYCOIN_INCREMENT_MS)
+    }
+
+    /**
+     * @throws UserDoesNotExistException
+     */
+    private suspend fun setCoins(id: Int, newCoins: Long): CallResult<UserCurrencies> = dbQuery {
+        Currencies.update({ Currencies.userId eq id }, limit = 1) {
+            it[coins] = newCoins
+            it[lastCoinAddTime] = Clock.System.now().toEpochMilliseconds()
+        }
+        // why the fuck does this work but when i call getCurrencies it doesn't show an updated record???
+        val ret = Currencies.selectAll()
+            .where { Currencies.userId eq id }
+            .map {
+                UserCurrencies(
+                    it[Currencies.coins],
+                    it[Currencies.shiners],
+                    it[Currencies.lastCoinAddTime]
+                )
+            }.singleOrNull()
+        return@dbQuery if (ret != null) CallResult.success(ret) else CallResult.userDoesNotExist()
     }
 
     @OptIn(ExperimentalStdlibApi::class)
@@ -205,12 +302,12 @@ class UserService(database: Database) {
         newSuspendedTransaction(Dispatchers.IO) { block() }
 }
 
+@OptIn(ExperimentalTime::class)
 class ChatService(database: Database) {
     object Messages : Table() {
         val id = integer("id").autoIncrement()
         val userId = integer("userId")
         val content = varchar("content", length = 400)
-        @OptIn(ExperimentalTime::class)
         val timestamp = long("timestamp").clientDefault { Clock.System.now().epochSeconds }
         override val primaryKey: PrimaryKey = PrimaryKey(id)
     }
@@ -221,7 +318,6 @@ class ChatService(database: Database) {
         }
     }
 
-    @OptIn(ExperimentalTime::class)
     suspend fun addMessage(message: String, token: Token): ChatMessage? {
         val user = userService.getTokenContent(token).apply {
             if (isFailure) {
