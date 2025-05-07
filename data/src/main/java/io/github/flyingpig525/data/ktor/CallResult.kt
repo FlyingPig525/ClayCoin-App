@@ -2,8 +2,12 @@ package io.github.flyingpig525.data.ktor
 
 import io.ktor.server.routing.RoutingContext
 import io.github.flyingpig525.data.auth.exception.*
+import io.github.flyingpig525.data.chat.exception.UserOnCooldownException
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.respondText
+import kotlinx.serialization.json.Json
 
 // just a copy-pasted Result
 class CallResult<out T> private constructor(
@@ -62,7 +66,7 @@ class CallResult<out T> private constructor(
     }
 
     /**
-     * Returns a string `Success(v)` if this instance represents [success][Result.isSuccess]
+     * Returns a string `Success(v)` if this instance represents [success][CallResult.isSuccess]
      * where `v` is a string representation of the value or a string `Failure(x)` if
      * it is [failure][isFailure] where `x` is a string representation of the exception.
      */
@@ -70,6 +74,15 @@ class CallResult<out T> private constructor(
         when (value) {
             is Failure -> value.toString() // "Failure($exception)"
             else -> "Success($value)"
+        }
+
+    /**
+     * @return this [CallResult] as the [Result] class in the kotlin std library
+     */
+    fun kotlinResult(): Result<T> =
+        when (value) {
+            is Failure -> Result.failure(value.exception)
+            else -> Result.success<T>(value as T)
         }
 
     /**
@@ -105,33 +118,73 @@ class CallResult<out T> private constructor(
         fun <T> failure(exception: Throwable, handle: suspend RoutingContext.() -> Unit = {}): CallResult<T> =
             CallResult(Failure(exception, handle))
 
+        const val USER_DOES_NOT_EXIST = "User does not exist"
         /**
          * Returns an instance containing a [UserDoesNotExistException] and prefilled handler
          */
         fun <T> userDoesNotExist() = failure<T>(UserDoesNotExistException()) {
-            call.respondText("User does not exist", status = HttpStatusCode.NotFound)
+            call.respondText(USER_DOES_NOT_EXIST, status = HttpStatusCode.NotFound)
         }
+
+        const val INVALID_CREDENTIALS = "Username or password was incorrect"
         /**
          * Returns an instance containing an [InvalidUsernameOrPasswordException] and prefilled handler
          */
         fun <T> invalidUsernameOrPassword() = failure<T>(
             InvalidUsernameOrPasswordException()
         ) {
-            call.respondText("Username or password was incorrect", status = HttpStatusCode.Unauthorized)
+            call.respondText(INVALID_CREDENTIALS, status = HttpStatusCode.Unauthorized)
         }
+
+        const val TOKEN_NOT_FOUND = "Token not found"
         /**
          * Returns an instance containing a [TokenNotFoundException] and prefilled handler
          */
         fun <T> tokenNotFound() = failure<T>(TokenNotFoundException()) {
-            call.respondText("Token not found", status = HttpStatusCode.NotFound)
+            call.respondText(TOKEN_NOT_FOUND, status = HttpStatusCode.NotFound)
         }
 
+        const val USER_EXISTS = "User already exists"
         /**
          * Returns an instance containing a [UserAlreadyExistsException] and prefilled handler
          */
         fun <T> userAlreadyExists() = failure<T>(UserAlreadyExistsException()) {
-            call.respondText("User already exists", status = HttpStatusCode.Conflict)
+            call.respondText(USER_EXISTS, status = HttpStatusCode.Conflict)
         }
+
+        const val CHAT_COOLDOWN = "User on chat cooldown"
+        /**
+         * Returns an instance containing a [UserOnCooldownException]
+         */
+        fun <T> userOnCooldown() = failure<T>(UserOnCooldownException()) {
+            call.respondText(CHAT_COOLDOWN, status = HttpStatusCode.Forbidden)
+        }
+
+        /**
+         * Creates an instance containing an exception found from a call response
+         */
+        suspend inline fun <reified T> fromResponse(response: HttpResponse): CallResult<T> {
+            return when (response.bodyAsText()) {
+                USER_DOES_NOT_EXIST -> userDoesNotExist<T>()
+                INVALID_CREDENTIALS -> invalidUsernameOrPassword<T>()
+                TOKEN_NOT_FOUND -> tokenNotFound<T>()
+                USER_EXISTS -> userAlreadyExists<T>()
+                CHAT_COOLDOWN -> userOnCooldown<T>()
+                else -> run {
+                    try {
+                        return@run success<T>(response.json<T>())
+                    } catch (e: Throwable) {
+                        return@run failure(e)
+                    }
+                }
+            }
+        }
+
+        /**
+         * Creates an instance containing an exception found from a call response, then returns a kotlin
+         * [Result]
+         */
+        suspend inline fun <reified T> fromResponseKt(response: HttpResponse): Result<T> = fromResponse<T>(response).kotlinResult()
     }
 
     internal class Failure(

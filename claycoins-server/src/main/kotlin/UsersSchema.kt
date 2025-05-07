@@ -9,12 +9,11 @@ import io.github.flyingpig525.data.auth.exception.TokenNotFoundException
 import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatMessage
+import io.github.flyingpig525.data.chat.USER_CHAT_COOLDOWN_MS
 import io.github.flyingpig525.data.ktor.CallResult
 import io.github.flyingpig525.data.user.CLAYCOIN_INCREMENT_MS
-import io.github.flyingpig525.data.user.CLAYCOIN_INCREMENT_S
 import io.github.flyingpig525.data.user.UserCurrencies
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import org.h2.security.SHA256
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -23,6 +22,8 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+
+const val SHINER_INCREMENT = 0.1
 
 @OptIn(ExperimentalTime::class)
 class UserService(database: Database) {
@@ -50,13 +51,21 @@ class UserService(database: Database) {
         val lastCoinAddTime = long("lastCoinAddTime").clientDefault {
             Clock.System.now().toEpochMilliseconds()
         }
+        val shinerProgress = integer("shinerProgress").default(0)
 
         override val primaryKey = PrimaryKey(userId)
     }
 
+    object Cooldowns : Table() {
+        val userId = integer("userId")
+        val lastChatMessageTimeMs = long("lastChatMessageTime").clientDefault {
+            Clock.System.now().toEpochMilliseconds() - USER_CHAT_COOLDOWN_MS
+        }
+    }
+
     init {
         transaction(database) {
-            SchemaUtils.create(Users, Tokens, Currencies)
+            SchemaUtils.create(Users, Tokens, Currencies, Cooldowns)
         }
     }
 
@@ -85,6 +94,10 @@ class UserService(database: Database) {
 
         // Everything else in Currencies has a default value
         Currencies.insert {
+            it[userId] = id
+        }
+
+        Cooldowns.insert {
             it[userId] = id
         }
         val token = token(user.username, id)
@@ -227,7 +240,8 @@ class UserService(database: Database) {
                 UserCurrencies(
                     it[Currencies.coins],
                     it[Currencies.shiners],
-                    it[Currencies.lastCoinAddTime]
+                    it[Currencies.lastCoinAddTime],
+                    it[Currencies.shinerProgress]
                 )
             }.singleOrNull()
         if (currencies == null) return@dbQuery CallResult.userDoesNotExist()
@@ -235,8 +249,6 @@ class UserService(database: Database) {
     }
 
     /**
-     * @return The value of this result should not ever be used
-     *
      * @throws UserDoesNotExistException
      */
     suspend fun updateCoins(userId: Int): CallResult<UserCurrencies> = dbQuery {
@@ -247,7 +259,7 @@ class UserService(database: Database) {
         val currencies = currenciesRes.getOrThrow()
         val epoch = Clock.System.now().toEpochMilliseconds()
         val over = ((epoch - currencies.coinUpdateTimeMs) / CLAYCOIN_INCREMENT_MS).toInt()
-        exposedLogger.info("over $over updateTime ${currencies.coinUpdateTimeMs} now $epoch")
+        exposedLogger.info("$userId over $over updateTime ${currencies.coinUpdateTimeMs} now $epoch")
         if (over == 0) {
             return@dbQuery currenciesRes
         }
@@ -265,6 +277,42 @@ class UserService(database: Database) {
         CallResult.success(currenciesRes.getOrThrow().coinUpdateTimeMs % CLAYCOIN_INCREMENT_MS)
     }
 
+    suspend fun chatMessageResults(userId: Int): Unit = dbQuery {
+        incrementShinerProgress(userId)
+        setUserChatCooldown(userId)
+    }
+
+    suspend fun setUserChatCooldown(userId: Int): Unit = dbQuery {
+        Cooldowns.update({ Cooldowns.userId eq userId }, limit = 1) {
+            it[lastChatMessageTimeMs] = Clock.System.now().toEpochMilliseconds()
+        }
+    }
+
+    suspend fun isOnChatCooldown(userId: Int): Boolean = dbQuery {
+        val chatCooldown = Cooldowns.selectAll()
+            .where { Cooldowns.userId eq userId }
+            .map { it[Cooldowns.lastChatMessageTimeMs] }
+            .singleOrNull() ?: return@dbQuery false
+        return@dbQuery Clock.System.now().toEpochMilliseconds() - chatCooldown > USER_CHAT_COOLDOWN_MS
+    }
+
+    /**
+     * @throws UserDoesNotExistException
+     */
+    suspend fun incrementShinerProgress(userId: Int): CallResult<UserCurrencies> = dbQuery {
+        val current = getCurrencies(userId).apply {
+            if (isFailure) return@dbQuery this
+        }.getOrThrow()
+        Currencies.update({ Currencies.userId eq userId }, limit = 1) {
+            it[shinerProgress] = if (current.shinerProgress == 4) 0 else current.shinerProgress + 1
+            if (current.shinerProgress == 4) {
+                it[shiners] = current.shiners + SHINER_INCREMENT
+            }
+        }
+        val ret = inlineGetCurrencies(userId)
+        return@dbQuery if (ret != null) CallResult.success(ret) else CallResult.userDoesNotExist()
+    }
+
     /**
      * @throws UserDoesNotExistException
      */
@@ -274,17 +322,24 @@ class UserService(database: Database) {
             it[lastCoinAddTime] = Clock.System.now().toEpochMilliseconds()
         }
         // why the fuck does this work but when i call getCurrencies it doesn't show an updated record???
-        val ret = Currencies.selectAll()
-            .where { Currencies.userId eq id }
-            .map {
-                UserCurrencies(
-                    it[Currencies.coins],
-                    it[Currencies.shiners],
-                    it[Currencies.lastCoinAddTime]
-                )
-            }.singleOrNull()
+        val ret = inlineGetCurrencies(id)
         return@dbQuery if (ret != null) CallResult.success(ret) else CallResult.userDoesNotExist()
     }
+
+    /**
+     * Inline, because if a function is called to get after an update, for some reason the update doesn't
+     * show
+     */
+    private inline fun inlineGetCurrencies(userId: Int) = Currencies.selectAll()
+        .where { Currencies.userId eq userId }
+        .map {
+            UserCurrencies(
+                it[Currencies.coins],
+                it[Currencies.shiners],
+                it[Currencies.lastCoinAddTime],
+                it[Currencies.shinerProgress]
+            )
+        }.singleOrNull()
 
     @OptIn(ExperimentalStdlibApi::class)
     private fun getHash(password: String, salt: Byte) =
@@ -318,14 +373,15 @@ class ChatService(database: Database) {
         }
     }
 
-    suspend fun addMessage(message: String, token: Token): ChatMessage? {
+    suspend fun addMessage(message: String, token: Token): CallResult<ChatMessage?> {
         val user = userService.getTokenContent(token).apply {
             if (isFailure) {
-                exposedLogger.error("an error occurred when adding token: $token's message")
-                exceptionOrNull()?.printStackTrace()
-                return null
+                return this.to<ChatMessage?>()
             }
         }.getOrThrow()
+        if (userService.isOnChatCooldown(user.userId)) {
+            return CallResult.userDoesNotExist()
+        }
         val message = dbQuery {
             Messages.insert {
                 it[userId] = user.userId
@@ -340,7 +396,8 @@ class ChatService(database: Database) {
             }.single()
         }
         messagesToSend.emit(message)
-        return message
+        userService.chatMessageResults(user.userId)
+        return CallResult.success(message)
     }
 
     suspend fun removeMessage(user: TokenContent, messageId: Int): Boolean {

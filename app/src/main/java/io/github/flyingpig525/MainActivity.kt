@@ -13,21 +13,26 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.animateColor
 import androidx.compose.animation.core.EaseInExpo
+import androidx.compose.animation.core.EaseInOutSine
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.StartOffsetType
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Settings
@@ -37,6 +42,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Scaffold
@@ -60,6 +67,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -72,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
@@ -88,11 +97,13 @@ import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatStorage
 import io.github.flyingpig525.data.user.CLAYCOIN_INCREMENT_MS
 import io.github.flyingpig525.data.user.UserData
+import io.github.flyingpig525.serialization.generateHashCode
 import io.github.flyingpig525.ui.chat.ChatScreen
 import io.github.flyingpig525.ui.login.LoginScreen
 import io.github.flyingpig525.ui.settings.SettingsScreen
 import io.github.flyingpig525.ui.theme.ClayCoinTheme
 import io.github.flyingpig525.ui.user.UserScreen
+import io.github.flyingpig525.ui.user.dashboard.DashboardScreen
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import kotlinx.coroutines.CoroutineScope
@@ -100,18 +111,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import kotlinx.serialization.serializer
 import java.io.FileNotFoundException
-import java.net.ConnectException
-import java.net.SocketException
-
-const val SERVER_IP = "89.117.0.24:8080"
-const val HTTP_SERVER_IP = "http://$SERVER_IP"
-const val WS_SERVER_IP = "ws://$SERVER_IP"
+import kotlin.time.ExperimentalTime
+////////////////////////////////////////////////////////////////////////////////////////////////////
+const val OFFLINE = false //////// BEFORE USING THIS, START HOSTING THE KTOR SERVER LOCALLY ////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+const val LOCALHOST_IP = "10.0.2.2:8080"
+val SERVER_IP = if (!OFFLINE) "89.117.0.24:8080" else LOCALHOST_IP
+val HTTP_SERVER_IP = "http://$SERVER_IP"
+val WS_SERVER_IP = "ws://$SERVER_IP"
 
 val fontFamily = FontFamily(
     Font(R.font.ar_one_sans_bold, weight = FontWeight.Bold),
@@ -127,6 +142,7 @@ class MainActivity : ComponentActivity() {
     var wsJob: Job? = null
     var paused = false
 
+    @OptIn(ExperimentalTime::class)
     @SuppressLint("SourceLockedOrientationActivity")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -143,13 +159,7 @@ class MainActivity : ComponentActivity() {
         var isConnected = true
         try {
             runBlocking {
-                UserStorage.httpClient.get("$HTTP_SERVER_IP/") {
-                    timeout {
-//                        connectTimeoutMillis = 2000
-//                        socketTimeoutMillis  = 2000
-//                        requestTimeoutMillis = 2000
-                    }
-                }
+                UserStorage.httpClient.get("$HTTP_SERVER_IP/") {}
             }
         } catch (e: Throwable) {
             isConnected = false
@@ -186,7 +196,6 @@ class MainActivity : ComponentActivity() {
                 }
             } else {
                 Application(
-                    windowManager.currentWindowMetrics.bounds,
                     defaultRoute = if (userStorage.currentId == null) Page.login else Page.dashboard,
                     userStorage,
                     chatStorage,
@@ -280,6 +289,7 @@ fun <T : Any> NavController.popTo(route: T, saveState: Boolean = false) {
     }
 }
 
+@OptIn(InternalSerializationApi::class)
 @Composable
 fun AppNavigationBar(navController: NavController, onBadNavigation: suspend () -> Unit) {
     BottomAppBar {
@@ -289,9 +299,7 @@ fun AppNavigationBar(navController: NavController, onBadNavigation: suspend () -
             if (!page.showOnNav) continue
             val cScope = rememberCoroutineScope()
             NavigationBarItem(
-                selected = currentDestination?.hierarchy?.any {
-                    it.route == page.route
-                } == true,
+                selected = currentDestination?.id == page::class.serializer().generateHashCode(),
                 onClick = {
                     if (MainActivity.instance.userStorage.currentId != null) {
                         navController.popTo(page, page.saveState)
@@ -316,7 +324,6 @@ fun AppNavigationBar(navController: NavController, onBadNavigation: suspend () -
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun Application(
-    windowBounds: Rect,
     defaultRoute: Any,
     userStorage: UserStorage = UserStorage(),
     chatStorage: ChatStorage = ChatStorage(),
@@ -350,19 +357,25 @@ fun Application(
                     startDestination = defaultRoute,
                 ) {
                     composable<Page.Dashboard> { backStackEntry ->
+                        val dataStorage = userStorage.data
+                        userStorage.data = null
                         var userData by remember { mutableStateOf(userStorage.data) }
                         LaunchedEffect("update userdata") {
+
                             val newData = userStorage.updateData()
                             if (newData.isFailure) {
                                 snackbarHostState.showSnackbar(
                                     "Data get failed, try again later.\n${newData.exceptionOrNull()!!::class.simpleName}: ${newData.exceptionOrNull()!!.message}"
                                 )
+                                userStorage.data = dataStorage
+                                userData = dataStorage
+                            } else {
+                                userData = newData.getOrThrow()
                             }
                         }
                         if (userData != null) {
                             DashboardScreen(
                                 modifier = Modifier.padding(innerPadding),
-                                windowBounds = windowBounds,
                                 userData = userData!!
                             )
                         } else {
@@ -422,150 +435,8 @@ fun Application(
     }
 }
 
-@Composable
-fun DashboardScreen(
-    windowBounds: Rect,
-    userData: UserData,
-    modifier: Modifier = Modifier,
-    coinIncreaseWaitMillis: Int = CLAYCOIN_INCREMENT_MS
-) {
-    var coins by rememberSaveable { mutableLongStateOf(userData.userCurrencies.coins) }
-    val offset = remember { (0..10000).random() }
-    val circleWidth = windowBounds.width().toDouble()
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            modifier = modifier.fillMaxWidth(circleWidth.toFloat()),
-            contentAlignment = Alignment.Center
-        ) {
-            ClaycoinDisplay(coins, coinIncreaseWaitMillis, offset) { coins++ }
-        }
-        Button(
-            onClick = {
-                coins++
-            }
-        ) {
-            Text(
-                "Increase those beautiful coins!!",
-                fontFamily = fontFamily,
-                fontSize = 20.sp
-            )
-        }
-    }
-}
 
-@Composable
-fun ClaycoinDisplay(
-    coins: Long,
-    coinIncreaseWaitMillis: Int = CLAYCOIN_INCREMENT_MS,
-    startOffsetMs: Int = 0,
-    increaseCoins: () -> Unit
-) = Box(contentAlignment = Alignment.Center) {
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-
-    val transition = rememberInfiniteTransition()
-    // The current rotation around the circle, so we know where to start the rotation from
-    val currentRotation by transition.animateFloat(
-        0f,
-        1f,
-        infiniteRepeatable(
-            animation =
-                tween(
-                    durationMillis = coinIncreaseWaitMillis,
-                    easing = LinearEasing
-                ),
-            initialStartOffset = StartOffset(startOffsetMs, StartOffsetType.FastForward)
-        )
-    )
-    val color by transition.animateColor(
-        ProgressIndicatorDefaults.circularColor,
-        ProgressIndicatorDefaults.circularDeterminateTrackColor,
-        infiniteRepeatable(
-            animation =
-                tween(
-                    durationMillis = coinIncreaseWaitMillis,
-                    easing = EaseInExpo
-                ),
-            initialStartOffset = StartOffset(startOffsetMs, StartOffsetType.FastForward)
-        )
-    )
-    val cScope = rememberCoroutineScope()
-    LaunchedEffect("increase coins") {
-        cScope.launch {
-            var d = (coinIncreaseWaitMillis - startOffsetMs).toLong()
-            while (true) {
-                delay(d)
-                increaseCoins()
-                d = coinIncreaseWaitMillis.toLong()
-            }
-        }
-    }
-
-    SemiCircularProgressIndicator(
-        progress = { currentRotation },
-        strokeWidth = 20.dp,
-        modifier = Modifier
-            .rotate(225f)
-            .scale(0.75f),
-        color = color
-    )
-
-    Text(
-        text = "$coins",
-        fontSize = 45.sp,
-        fontFamily = fontFamily,
-        softWrap = false,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth()
-    )
-    Text(
-        "Claycoins",
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = screenWidth / 2 + 10.dp),
-        textAlign = TextAlign.Center,
-        fontSize = 25.sp,
-        fontFamily = fontFamily,
-        fontWeight = FontWeight.Bold
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SemiCircularProgressIndicator(
-    progress: () -> Float,
-    circlePercent: Float = 0.75f,
-    modifier: Modifier = Modifier,
-    color: Color = ProgressIndicatorDefaults.circularColor,
-    strokeWidth: Dp = ProgressIndicatorDefaults.CircularStrokeWidth,
-    trackColor: Color = ProgressIndicatorDefaults.circularDeterminateTrackColor,
-    strokeCap: StrokeCap = ProgressIndicatorDefaults.CircularDeterminateStrokeCap,
-    gapSize: Dp = ProgressIndicatorDefaults.CircularIndicatorTrackGapSize,
-    radius: Dp = LocalConfiguration.current.screenWidthDp.dp
-) {
-    CircularProgressIndicator(
-        progress = { circlePercent },
-        strokeWidth = strokeWidth,
-        modifier = Modifier
-            .size(radius)
-            .then(modifier),
-        trackColor = Color(0x000000FF),
-        color = trackColor,
-        strokeCap = strokeCap,
-        gapSize = gapSize
-    )
-    CircularProgressIndicator(
-        progress = { circlePercent * progress() },
-        strokeWidth = strokeWidth,
-        modifier = Modifier
-            .size(radius)
-            .then(modifier),
-        trackColor = Color(0x000000FF),
-        color = color,
-        strokeCap = strokeCap,
-        gapSize = gapSize
-    )
-}
 
 @Composable
 fun getColorScheme(): ColorScheme = when(isSystemInDarkTheme()) {
@@ -586,7 +457,6 @@ fun getColorScheme(): ColorScheme = when(isSystemInDarkTheme()) {
 @Composable
 fun DashboardScreenPreview() {
     Application(
-        Rect(0, 0, 1080, 2400),
         defaultRoute = Page.Dashboard
     )
 }

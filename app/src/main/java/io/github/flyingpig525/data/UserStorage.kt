@@ -9,8 +9,10 @@ import io.github.flyingpig525.data.auth.exception.UserAlreadyExistsException
 import io.github.flyingpig525.data.auth.exception.UserDoesNotExistException
 import io.github.flyingpig525.data.chat.ChatStorage
 import io.github.flyingpig525.data.exception.NoIdException
+import io.github.flyingpig525.data.ktor.CallResult
 import io.github.flyingpig525.data.ktor.body
 import io.github.flyingpig525.data.ktor.json
+import io.github.flyingpig525.data.user.UserCurrencies
 import io.github.flyingpig525.data.user.UserData
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -26,6 +28,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.runBlocking
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 
 class UserStorage {
     var currentToken: Token? = null
@@ -43,7 +47,6 @@ class UserStorage {
     var currentId: Int? = null
         private set
     var data: UserData? = null
-        private set
 
     private suspend fun setMeta() {
         // should never happen
@@ -52,7 +55,7 @@ class UserStorage {
             parameter("token", currentToken!!.hashedToken)
         }
         if (req.status == HttpStatusCode.NotFound) {
-            Log.e("io.github.flyingpig525", "Id request status = NotFound")
+            Log.e("User Storage", "Id request status = NotFound")
             return
         }
         currentId = req.body<Int>()
@@ -76,15 +79,7 @@ class UserStorage {
         val token = httpClient.post("$HTTP_SERVER_IP/users") {
             body(auth)
         }
-        if (token.status == HttpStatusCode.Conflict) {
-            return Result.failure(UserAlreadyExistsException())
-        }
-        try {
-            return Result.success(token.json())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return Result.failure(UnknownError())
+        return CallResult.fromResponseKt(token)
     }
 
     suspend fun getNewToken(username: String, password: String): Result<Token> {
@@ -95,12 +90,7 @@ class UserStorage {
         val tokenReq = httpClient.patch("$HTTP_SERVER_IP/users") {
             body(auth)
         }
-        return when (tokenReq.status) {
-            HttpStatusCode.NotFound -> Result.failure(UserDoesNotExistException())
-            HttpStatusCode.Unauthorized -> Result.failure(InvalidUsernameOrPasswordException())
-            HttpStatusCode.OK -> Result.success(tokenReq.json<Token>())
-            else -> throw UnknownError("Unknown request status ${tokenReq.status}")
-        }
+        return CallResult.fromResponseKt(tokenReq)
     }
 
     fun logOut() {
@@ -124,11 +114,7 @@ class UserStorage {
             val req = httpClient.get("$HTTP_SERVER_IP/users/$userId")
             println(req)
             println(req.bodyAsText())
-            if (req.status == HttpStatusCode.NotFound) {
-                return Result.failure(UserDoesNotExistException())
-            }
-            val data = req.json<UserData>()
-            return Result.success(data)
+            return CallResult.fromResponseKt(req)
         }
     }
 }

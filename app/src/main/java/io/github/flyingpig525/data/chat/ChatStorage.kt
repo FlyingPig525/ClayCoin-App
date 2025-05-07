@@ -1,5 +1,6 @@
 package io.github.flyingpig525.data.chat
 
+import android.os.CountDownTimer
 import android.util.Log
 import io.github.flyingpig525.HTTP_SERVER_IP
 import io.github.flyingpig525.WS_SERVER_IP
@@ -48,6 +49,8 @@ class ChatStorage {
             }
             return field
         }
+    private var countdownObject: CountDownTimer? = null
+    var cooldownS: MutableStateFlow<Int> = MutableStateFlow(0)
 
     fun newMessage(message: ChatMessage) {
         _messages.value += message
@@ -56,6 +59,36 @@ class ChatStorage {
     suspend fun sendNewMessage(token: Token, content: String) {
         Log.d("Chat WebSocket", "Sending message with content: $content")
         ws.send(Json.encodeToString(MessageContainer(token, content.trim())))
+        countdownObject?.cancel()
+        cooldownS.value = USER_CHAT_COOLDOWN_S.toInt()
+        countdownObject = object : CountDownTimer(USER_CHAT_COOLDOWN_MS, 1000) {
+            override fun onTick(msUntilDone: Long) {
+                runBlocking {
+                    cooldownS.value = when (true) {
+                        (msUntilDone > 9000) -> 10
+                        (msUntilDone > 8000) -> 9
+                        (msUntilDone > 7000) -> 8
+                        (msUntilDone > 6000) -> 7
+                        (msUntilDone > 5000) -> 6
+                        (msUntilDone > 4000) -> 5
+                        (msUntilDone > 3000) -> 4
+                        (msUntilDone > 2000) -> 3
+                        (msUntilDone > 1000) -> 2
+                        (msUntilDone > 0) -> 1
+                        else -> 0
+                    }
+                }
+            }
+
+            override fun onFinish() {
+                runBlocking {
+                    cooldownS.value = 0
+                }
+                countdownObject = null
+            }
+
+        }
+        countdownObject?.start()
     }
 
     suspend fun receiveMessage() {

@@ -1,7 +1,7 @@
 package io.github.flyingpig525.ui.chat
 
 import android.annotation.SuppressLint
-import android.app.Service
+import android.content.Context
 import android.content.res.Configuration
 import android.util.Log
 import androidx.compose.foundation.clickable
@@ -34,7 +34,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,7 +43,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -137,14 +140,18 @@ fun ChatScreen(
     }
     Scaffold(
         bottomBar = {
-            TextInput { state ->
-                if (userStorage.currentToken != null) {
-                    runBlocking {
-                        launch {
-                            chatStorage.sendNewMessage(
-                                userStorage.currentToken!!,
-                                state
-                            )
+            Column {
+                val cooldownS by chatStorage.cooldownS.collectAsStateWithLifecycle()
+                Text(if (cooldownS > 0) "Cooldown: ${cooldownS}s" else " ")
+                TextInput(enabled = cooldownS <= 0) { state ->
+                    if (userStorage.currentToken != null) {
+                        runBlocking {
+                            launch {
+                                chatStorage.sendNewMessage(
+                                    userStorage.currentToken!!,
+                                    state
+                                )
+                            }
                         }
                     }
                 }
@@ -274,11 +281,12 @@ fun MessageBox(
 }
 
 @Composable
-fun TextInput(onSend: (text: String) -> Unit) {
+fun TextInput(enabled: Boolean = true, onSend: (text: String) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth()) {
         var state by remember { mutableStateOf("") }
         var sizeState by remember { mutableStateOf(IntSize(0, 0)) }
         val scrollState = rememberScrollState()
+        val focusRequester = remember { FocusRequester() }
         OutlinedTextField(
             value = state,
             onValueChange = { str: String ->
@@ -294,15 +302,18 @@ fun TextInput(onSend: (text: String) -> Unit) {
                 .verticalScroll(scrollState)
                 .onSizeChanged {
                     sizeState = it
-                },
+                }
+                .focusRequester(focusRequester),
             placeholder = { Text("Start Typing") },
             maxLines = 2
         )
         Button(
             onClick = {
+                if (state.all { it.isWhitespace() } || state == "") return@Button
                 onSend(state)
                 state = ""
             },
+            enabled = enabled,
             shape = ShapeDefaults.Medium.copy(
                 bottomStart = CornerSize(0),
                 bottomEnd = CornerSize(0),
@@ -327,6 +338,9 @@ fun TextInput(onSend: (text: String) -> Unit) {
                 )
         ) {
             Text("Send")
+        }
+        LaunchedEffect("request focus") {
+            focusRequester.requestFocus()
         }
     }
 }

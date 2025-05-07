@@ -18,11 +18,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.sp
-import io.github.flyingpig525.ClaycoinDisplay
 import io.github.flyingpig525.data.user.UserCurrencies
 import io.github.flyingpig525.data.user.UserData
 import io.github.flyingpig525.getColorScheme
 import io.github.flyingpig525.ui.theme.ClayCoinTheme
+import io.github.flyingpig525.ui.user.dashboard.ClaycoinDisplay
+import io.github.flyingpig525.ui.user.dashboard.ShinerProgressIndicator
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
@@ -44,6 +45,11 @@ fun UserScreen(userData: UserData, modifier: Modifier = Modifier) {
             coins,
             startOffsetMs = compositionOffset
         ) { coins++ }
+
+        ShinerProgressIndicator(
+            progress = userData.userCurrencies.shinerProgress,
+            shiners = userData.userCurrencies.shiners
+        )
     }
 }
 
@@ -66,7 +72,8 @@ fun UserScreenPreview() {
                     UserCurrencies(
                         1231,
                         124.821,
-                        now
+                        now,
+                        3
                     ),
                     false
                 ),
@@ -95,7 +102,8 @@ fun UserScreenAdminPreview() {
                     UserCurrencies(
                         1231,
                         124.821,
-                        now
+                        now,
+                        3
                     ),
                     true
                 ),
